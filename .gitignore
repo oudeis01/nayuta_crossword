@@ -1,0 +1,21 @@
+# 가상환경
+.venv/
+
+# 서드파티 클론 (vendor/LGDE 는 자체 .git 보유; 별도 설치/클론으로 재현)
+vendor/
+
+# 재생성 가능한 중간 산출물 전체
+data/
+
+# 생성된 HTML 리뷰 리포트 / 대용량 단어검토 md (재생성 가능)
+docs/review/
+docs/review_test/
+docs/word_review.md
+docs/word_review_enriched.md
+
+# 로컬 전용 Claude 설정
+.claude/settings.local.json
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
