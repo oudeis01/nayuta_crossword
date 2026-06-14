@@ -13,9 +13,23 @@ docs/review_test/
 docs/word_review.md
 docs/word_review_enriched.md
 
+# 인쇄물 생성(비공개): 카드 PDF/PNG 렌더 코드·설정·산출물만 제외.
+# 퍼즐 생성·힌트 생성·웹 페이지 생성 코드는 공개한다.
+src/make_print.py
+src/make_png.py
+print_config.yaml
+docs/print/
+
 # 로컬 전용 Claude 설정
 .claude/settings.local.json
 
 # 파이썬 캐시
 __pycache__/
 *.pyc
+
+# 스크래치/임시 검토 산출물 (로컬 정리 대상)
+.playwright-mcp/
+docs/_stale/
+review-needed.md
+review-sorted.md
+review2ascii.py
