@@ -14,7 +14,7 @@
 산출:
   docs/<CW_REVIEW_DIR>/index.html + puzzle_NNN.html. 기본 review
 """
-import json, os, sys, html
+import json, os, sys, html, collections
 from urllib.parse import urlparse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -160,31 +160,67 @@ def main():
     review_dir = os.path.join(docs_dir, load("CW_REVIEW_DIR", "review"))
     os.makedirs(review_dir, exist_ok=True)
 
+    # 이전 세대 잔재 제거: 퍼즐 수가 줄면 구본 puzzle_*.html이 남아 검수를 오염시킨다.
+    import glob as _glob
+    stale = _glob.glob(os.path.join(review_dir, "puzzle_*.html"))
+    for f in stale:
+        os.remove(f)
+    if stale:
+        print(f"기존 puzzle_*.html {len(stale)}개 삭제(세대 혼합 방지)", flush=True)
+
     puzzles = json.load(open(os.path.join(data_dir, puzzles_file), encoding="utf-8"))
     templates = json.load(open(os.path.join(data_dir, "templates.json"), encoding="utf-8"))
     ws = json.load(open(os.path.join(data_dir, sent_file), encoding="utf-8"))
     puzzles = [z for z in puzzles if z.get("ok")]
-    print(f"퍼즐 {len(puzzles)}개 | 용례 단어 {len(ws):,}개 → {review_dir}", flush=True)
 
-    # 개별 페이지
-    idx_rows = []
+    # 동일 채움(같은 template + 동일 배치) 중복 제거: race로 같은 답이 여러 번 나올 수 있음.
+    seen, dedup = set(), []
+    for z in puzzles:
+        key = (z["tidx"], tuple(sorted(z["assign"].items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(z)
+    puzzles = dedup
+
+    # 크기 주입 후 (크기, 템플릿) 순 정렬 → 크기별로 모아 검수.
+    for z in puzzles:
+        z["_size"] = len(templates[z["tidx"]]["grid"])
+    puzzles.sort(key=lambda z: (z["_size"], z.get("template_id", ""), z.get("seed", 0)))
+    by_size = collections.Counter(z["_size"] for z in puzzles)
+    print(f"퍼즐 {len(puzzles)}개(중복제거 후) | 용례 단어 {len(ws):,}개 → {review_dir}", flush=True)
+    print(f"  크기별: {dict(sorted(by_size.items()))}", flush=True)
+
+    # 개별 페이지 (크기별 그룹 인덱스)
+    idx_groups = collections.OrderedDict()
     for i, pz in enumerate(puzzles):
         template = templates[pz["tidx"]]
         page = puzzle_page(pz, template, ws)
         fn = f"puzzle_{i:03d}.html"
         with open(os.path.join(review_dir, fn), "w", encoding="utf-8") as fh:
             fh.write(page)
-        idx_rows.append(
-            f"<tr><td>{i}</td><td><a href='{fn}'>{html.escape(pz.get('template_id','?'))}</a></td>"
-            f"<td>{pz.get('seed')}</td><td>{pz.get('n_words')}</td>"
-            f"<td>{len(pz.get('themed',[]))}</td></tr>")
+        sz = pz["_size"]
+        row = (f"<tr><td>{i}</td><td><a href='{fn}'>{html.escape(pz.get('template_id','?'))}</a></td>"
+               f"<td>{sz}x{sz}</td><td>{pz.get('seed')}</td><td>{pz.get('n_words')}</td>"
+               f"<td>{len(pz.get('themed',[]))}</td></tr>")
+        idx_groups.setdefault(sz, []).append(row)
+
+    summary = "".join(f"<tr><td>{s}x{s}</td><td>{len(rows)}</td></tr>"
+                      for s, rows in sorted(idx_groups.items()))
+    sections = []
+    for s, rows in sorted(idx_groups.items()):
+        sections.append(
+            f"<h2>{s}x{s} ({len(rows)}개)</h2>"
+            f"<table class='idx'><tr><th>#</th><th>템플릿</th><th>크기</th><th>seed</th>"
+            f"<th>단어수</th><th>themed</th></tr>{''.join(rows)}</table>")
 
     index = (f"<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
              f"<title>퍼즐 검토</title><style>{STYLE}</style></head><body>"
              f"<h1>퍼즐 검토 ({len(puzzles)}개)</h1>"
              f"<div class='legend'>입력: {html.escape(puzzles_file)} / 용례: {html.escape(sent_file)}</div>"
-             f"<table class='idx'><tr><th>#</th><th>템플릿</th><th>seed</th>"
-             f"<th>단어수</th><th>themed</th></tr>{''.join(idx_rows)}</table>"
+             f"<h2>크기별 생산량</h2>"
+             f"<table class='idx'><tr><th>크기</th><th>퍼즐 수</th></tr>{summary}</table>"
+             f"{''.join(sections)}"
              f"</body></html>")
     with open(os.path.join(review_dir, "index.html"), "w", encoding="utf-8") as fh:
         fh.write(index)

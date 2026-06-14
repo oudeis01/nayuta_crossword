@@ -157,10 +157,8 @@ def slot_cells(slot):
     return {(r + i, c) for i in range(L)}
 
 
-def fillability_ok(slots, cfg_grid):
-    """긴 슬롯 개수/교차 제약으로 채우기 난이도 제어."""
-    longT = cfg_grid["long_threshold"]
-    xlongT = cfg_grid["xlong_threshold"]
+def fillability_ok(slots, cfg_grid, longT, xlongT):
+    """긴 슬롯 개수/교차 제약으로 채우기 난이도 제어 (임계값은 크기별로 환산해 전달)."""
     longs = [s for s in slots if s[3] >= longT]
     if len(longs) > cfg_grid["max_long_slots"]:
         return False
@@ -175,63 +173,72 @@ def fillability_ok(slots, cfg_grid):
     return True
 
 
-def main():
-    cfg = load_config()
-    data_dir = os.path.join(ROOT, cfg["paths"]["data_dir"])
-    cfg_grid = cfg["grid"]
-    cfg_rules = cfg["rules"]
-    n = cfg_grid["size"]
-    want = cfg_grid["bank_size"]
+def gen_for_size(n, want, cfg_grid, cfg_rules, rng):
+    """단일 크기 n에 대해 유효 템플릿 want개 생성."""
     symmetry = cfg_rules["symmetry"]
     forbid_2x2 = cfg_rules["forbid_2x2_black"]
     lo = int(n * n * cfg_rules["min_black_pct"])
     hi = int(n * n * cfg_rules["max_black_pct"])
-    rng = random.Random(42)
+    # 변 길이 비례 임계값 (최소 3 보장)
+    longT = max(3, round(n * cfg_grid["long_threshold_ratio"]))
+    xlongT = max(longT, round(n * cfg_grid["xlong_threshold_ratio"]))
 
-    templates = []
-    seen_patterns = set()
-    attempts = 0
-    rejected_fill = 0
-    while len(templates) < want and attempts < 200000:
+    out, seen = [], set()
+    attempts = rejected_fill = 0
+    while len(out) < want and attempts < 200000:
         attempts += 1
-        target_black = rng.randint(lo, hi)  # rules.min/max_black_pct 기반
+        target_black = rng.randint(lo, hi)
         g = generate_one(n, target_black, rng, symmetry=symmetry, forbid_2x2=forbid_2x2)
         if g is None:
             continue
         key = "".join(g)
-        if key in seen_patterns:
+        if key in seen:
             continue
         slots = grid_slots(g)
-        if not fillability_ok(slots, cfg_grid):
+        if not fillability_ok(slots, cfg_grid, longT, xlongT):
             rejected_fill += 1
             continue
         black = sum(row.count("#") for row in g)
-        templates.append({
-            "id": f"T{len(templates):03d}",
+        out.append({
+            "size": n,
             "grid": g,
             "black": black,
             "black_pct": round(100 * black / (n * n), 1),
             "n_words": len(slots),
             "slot_len_dist": dict(sorted(collections.Counter(s[3] for s in slots).items())),
         })
-        seen_patterns.add(key)
+        seen.add(key)
+    return out, attempts, rejected_fill, longT, xlongT
+
+
+def main():
+    cfg = load_config()
+    data_dir = os.path.join(ROOT, cfg["paths"]["data_dir"])
+    cfg_grid = cfg["grid"]
+    cfg_rules = cfg["rules"]
+    smin = cfg_grid.get("size_min", cfg_grid["size"])
+    smax = cfg_grid.get("size_max", cfg_grid["size"])
+    per = cfg_grid.get("bank_per_size", cfg_grid.get("bank_size", 25))
+    rng = random.Random(42)
+
+    templates = []
+    for n in range(smin, smax + 1):
+        out, attempts, rej, longT, xlongT = gen_for_size(n, per, cfg_grid, cfg_rules, rng)
+        for t in out:
+            t["id"] = f"T{len(templates):03d}"
+            templates.append(t)
+        bl_pct = [t["black_pct"] for t in out]
+        wc = [t["n_words"] for t in out]
+        if out:
+            print(f"[{n}x{n}] 시도 {attempts:6}, 채움제약탈락 {rej:6}, 유효 {len(out):3}/{per} "
+                  f"| long>={longT} xlong>={xlongT} | black {min(bl_pct)}~{max(bl_pct)}% "
+                  f"| words {min(wc)}~{max(wc)}")
+        else:
+            print(f"[{n}x{n}] 시도 {attempts:6}, 유효 0/{per} (생성 실패: 제약 과도?)")
 
     json.dump(templates, open(os.path.join(data_dir, "templates.json"), "w",
               encoding="utf-8"), ensure_ascii=False, indent=1)
-
-    print(f"생성 시도 {attempts}, 채우기제약 탈락 {rejected_fill}, 유효 템플릿 {len(templates)}개 저장")
-    if templates:
-        bl = [t["black"] for t in templates]
-        wc = [t["n_words"] for t in templates]
-        print(f"  검은 칸: {min(bl)}~{max(bl)} ({min(t['black_pct'] for t in templates)}~"
-              f"{max(t['black_pct'] for t in templates)}%)")
-        print(f"  단어 수: {min(wc)}~{max(wc)} (평균 {sum(wc)/len(wc):.0f})")
-        # 샘플 1개 출력
-        print(f"\n[샘플 {templates[0]['id']}] black={templates[0]['black']} "
-              f"words={templates[0]['n_words']}")
-        for row in templates[0]["grid"]:
-            print("  " + row.replace("#", "■").replace(".", "·"))
-        print(f"  슬롯 길이 분포: {templates[0]['slot_len_dist']}")
+    print(f"\n총 {len(templates)}개 템플릿 저장 (크기 {smin}~{smax}, 크기별 목표 {per})")
 
 
 if __name__ == "__main__":

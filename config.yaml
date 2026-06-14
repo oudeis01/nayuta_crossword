@@ -59,15 +59,20 @@ weights:
   general: 1
 
 grid:
-  size: 17                   # 실측 후 조정 가능
-  # 채우기 타당성 제어: 긴 슬롯이 서로 교차하면 17x17 fully-checked는 거의 채울 수 없음.
+  # 가변 크기: size_min~size_max 각 변 길이로 템플릿을 생성(균등 스윕).
+  # 단일 크기로 쓰려면 size_min==size_max 로 두면 됨.
+  size_min: 10
+  size_max: 17
+  size: 17                   # (하위호환) 단일크기 모드 참조값; 가변 사용 시 무시
+  # 채우기 타당성 제어: 긴 슬롯이 서로 교차하면 fully-checked는 거의 채울 수 없음.
   # 긴 답안은 짧은 단어와만 교차하도록(실제 크로스워드 관습) 템플릿을 제한.
-  long_threshold: 12         # 이 길이 이상을 '긴 슬롯'으로 간주
+  # 절대 길이가 아니라 '변 길이 비례'로 환산해 모든 크기에서 일관 적용.
+  long_threshold_ratio: 0.70   # round(size*ratio) 이상을 '긴 슬롯'으로 간주 (17→12)
+  xlong_threshold_ratio: 0.88  # round(size*ratio) 이상을 '초장 슬롯'으로 간주 (17→15)
   max_long_slots: 4          # 긴 슬롯 최대 개수
-  xlong_threshold: 15        # 초장 슬롯 기준
   max_xlong_slots: 2         # 초장 슬롯 최대 개수
   forbid_long_cross: true    # 긴 슬롯끼리 교차 금지
-  bank_size: 60              # 생성할 템플릿 뱅크 크기
+  bank_per_size: 40          # 크기별 생성할 템플릿 수 (총 = size수 * 이값)
 
 rules:
   # rule.md 절대 규칙(1~5: fully-checked, 최소 3자, 연결성, 전부검은행 금지, 단어중복 금지)은

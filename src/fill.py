@@ -20,10 +20,13 @@ def load_config():
 
 
 class WordIndex:
-    def __init__(self, pool):
+    def __init__(self, pool, vgroup=None):
+        # vgroup: 미/영 철자 변형 동치 맵 {단어: 그룹키}. 같은 그룹은 한 퍼즐에
+        # 하나만 허용 (honour/honor 류, data/spelling_variants.json).
         self.by_len = collections.defaultdict(list)
         self.weight = {}
         self.tier = {}
+        self.vkey = vgroup or {}
         for tok, rec in pool.items():
             self.by_len[len(tok)].append(tok)
             self.weight[tok] = rec["weight"]
@@ -85,6 +88,7 @@ def solve(grid, widx, rng, node_budget=30000, restarts=200, max_seconds=None,
     nslots = len(slots)
     lengths = {s["len"] for s in slots}
     deadline = (time.time() + max_seconds) if max_seconds else None
+    vkey = widx.vkey.get   # used 집합은 변형 동치 그룹키로 기록 (중복 금지 확장)
 
     for _ in range(restarts):
         if deadline and time.time() > deadline:
@@ -121,7 +125,7 @@ def solve(grid, widx, rng, node_budget=30000, restarts=200, max_seconds=None,
                 for cand in domain[i]:
                     if widx.weight[cand] == 1:
                         break
-                    if widx.tier[cand] in seed_tiers and cand not in used:
+                    if widx.tier[cand] in seed_tiers and vkey(cand, cand) not in used:
                         w = cand
                         break
                 if w is None:
@@ -142,7 +146,7 @@ def solve(grid, widx, rng, node_budget=30000, restarts=200, max_seconds=None,
                         break
                 if ok:
                     assigned[i] = w
-                    used.add(w)
+                    used.add(vkey(w, w))
                     domain[i] = [w]
                     n_seeded += 1
                 else:
@@ -167,7 +171,7 @@ def solve(grid, widx, rng, node_budget=30000, restarts=200, max_seconds=None,
             s = slots[best]
             saved = {}   # cross_sid -> old domain list
             for w in domain[best]:
-                if w in used:
+                if vkey(w, w) in used:
                     continue
                 # 교차 슬롯 필터
                 ok = True
@@ -186,12 +190,12 @@ def solve(grid, widx, rng, node_budget=30000, restarts=200, max_seconds=None,
                         break
                 if ok:
                     assigned[best] = w
-                    used.add(w)
+                    used.add(vkey(w, w))
                     res = recurse(n_assigned + 1)
                     if res is True or res == "budget":
                         return res
                     assigned[best] = None
-                    used.discard(w)
+                    used.discard(vkey(w, w))
                 # 복원
                 for csid, old in saved.items():
                     domain[csid] = old
@@ -201,6 +205,12 @@ def solve(grid, widx, rng, node_budget=30000, restarts=200, max_seconds=None,
         if res is True:
             return {s["id"]: assigned[s["id"]] for s in slots}, slots
     return None, slots
+
+
+def load_variants(data_dir):
+    """미/영 철자 변형 동치 맵 로드 (build_variants.py 산출, 없으면 빈 맵)."""
+    p = os.path.join(data_dir, "spelling_variants.json")
+    return json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
 
 
 def render(grid, assign, slots):
@@ -220,10 +230,11 @@ def main():
     data_dir = os.path.join(ROOT, cfg["paths"]["data_dir"])
     pool = json.load(open(os.path.join(data_dir, "wordpool.json"), encoding="utf-8"))
     templates = json.load(open(os.path.join(data_dir, "templates.json"), encoding="utf-8"))
+    vgroup = load_variants(data_dir)
 
     print(f"단어 색인 구축 중... (풀 {len(pool):,})", flush=True)
     t0 = time.time()
-    widx = WordIndex(pool)
+    widx = WordIndex(pool, vgroup)
     print(f"  색인 완료 {time.time()-t0:.1f}s", flush=True)
 
     import sys
