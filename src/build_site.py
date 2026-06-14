@@ -1,25 +1,37 @@
 #!/usr/bin/env python3
-"""퍼즐별 공개 힌트 페이지 정적 사이트 생성 (Cloudflare Pages용).
+"""퍼즐별 공개 힌트 페이지 정적 사이트 생성 (Cloudflare Workers Static Assets용).
 
-각 퍼즐(원본 240개)을 한 페이지로 만든다. 한 장 = 그 퍼즐의 Across/Down 클루
-목록이며, 클루는 "정답을 _____ 로 가린 코퍼스 예문"(cloze)이다. 정답은 공개하지
-않는다(QR 정책). 클루마다 원본 출처 URL을 각주(부록)로 단다.
+각 퍼즐(원본 240개)을 한 페이지로 만든다. 한 장 = 인쇄 카드와 동일한 십자말풀이
+격자를 그대로 렌더한 것이다. 칸을 탭하면 그 단어의 모든 예문 힌트가 하단 시트
+(bottom sheet)로 함께 뜬다. 정답 글자는 페이지에 넣지 않는다(선완성 단어만 예외;
+카드에 이미 인쇄되어 공개된 글자라 격자에 같이 표시한다). 예문은 정답을 _____ 로
+가린 cloze 이며, 출처 링크는 새 탭으로 연다.
 
 URL 규약: /NNNN  (4자리 0패딩 seq). 카드 앞면 seq(= 원본 1-based 인덱스)와 동일.
   make_print 가 seq.mode=source 에서 p["_src"]=i+1 을 쓰므로 /0101 == puzzles_raw[100].
-  디렉터리 방식(public/0101/index.html)이라 Cloudflare Pages 에서 클린 URL 로 뜬다.
+  디렉터리 방식(public/0101/index.html)이라 클린 URL 로 뜬다.
+
+상호작용 모델(확정):
+  - 빈칸 탭 -> 그 칸이 속한 단어 선택+하이라이트, 같은 칸 재탭 -> 가로/세로 전환.
+  - 선택 단어의 예문 힌트를 전부 펼쳐 하단 시트에 표시(본문은 비례폰트, UI 는 모노).
+  - 텍스트 클루 리스트는 두지 않는다(격자만).
 
 입력(환경변수로 교체 가능):
   data/<CW_PUZZLES>  퍼즐(기본 puzzles_raw.json). 순서가 seq 의 근거다.
   data/templates.json 격자 템플릿(template_id 로 참조).
   data/<CW_HINTS>    힌트 선택 결과(기본: hint_final.json 있으면 그것, 없으면 hint_prefill.json).
   data/<CW_SENT>     코퍼스 용례(기본 word_sentences.json) - 폴백 예문/cloze 원문.
+  CW_PREFILL         선완성 단어 수(기본 3). print_config.yaml 의 select.prefill 과 같아야
+                     카드의 선완성 글자와 웹 격자가 일치한다.
 산출:
-  public/NNNN/index.html (퍼즐별) + public/index.html + public/404.html + public/_headers
+  public/NNNN/index.html (퍼즐별) + public/index.html + public/404.html
+  + public/style.css + public/app.js + public/_headers
 
 주의: 이 스크립트는 인쇄 코드(make_print.py)에 의존하지 않는다(공개 레포 분리).
-  클루 번호 규칙은 make_print.cell_numbers 와 동일하게 재구현했다.
+  클루 번호 규칙(cell_numbers)과 선완성 선택(pick_prefill)을 make_print 와 동일하게
+  재구현했다. 두 곳이 갈라지면 카드와 웹이 어긋나니 함께 고쳐야 한다.
 """
+import collections
 import datetime
 import html
 import json
@@ -36,6 +48,9 @@ TITLE = "Nayuta: The Transformer"
 WORDMARK = "nayuta"
 BASE_URL = "https://crossword.choiharam.com"
 
+# 한 단어당 폴백(코퍼스) 예문 최대 개수. 사람검수/LLM 선택분은 전부 보여 준다.
+MAX_FALLBACK = 3
+
 
 def env(name, default):
     return os.environ.get(name, default)
@@ -51,7 +66,7 @@ _SUF = r"(?:s|es|ed|ing|'s|d)?"
 
 
 def find_surface(text, word):
-    """문장에서 정답 단어 span 을 찾는다. 없으면 None. (2단계: 엄격→구분자 허용)"""
+    """문장에서 정답 단어 span 을 찾는다. 없으면 None. (2단계: 엄격->구분자 허용)"""
     w = re.escape(word)
     m = re.search(r"\b" + w + _SUF + r"\b", text, re.IGNORECASE)
     if m:
@@ -72,99 +87,163 @@ def cell_numbers(slots):
     return {cell: i + 1 for i, cell in enumerate(starts)}
 
 
+def pick_prefill(slots, assign, themed, n_prefill):
+    """make_print.pick_prefill 과 동일: themed 중 교차 칸 수 내림차순 상위 n_prefill개.
+
+    반환 (선완성 글자 {cell:char}, 선완성 슬롯 id 집합). 카드와 동일 정렬/타이브레이크.
+    """
+    if n_prefill <= 0:
+        return {}, set()
+    occ = collections.Counter()
+    for s in slots:
+        for cell in s["cells"]:
+            occ[cell] += 1
+    themed_set = set(themed)
+    cand = []
+    for s in slots:
+        w = assign.get(str(s["id"]))
+        if not w or w not in themed_set:
+            continue
+        crossings = sum(1 for cell in s["cells"] if occ[cell] > 1)
+        cand.append((-crossings, -s["len"], w, s))
+    cand.sort(key=lambda t: t[:3])
+    cells, ids = {}, set()
+    for _, _, w, s in cand[:n_prefill]:
+        ids.add(s["id"])
+        for ch, cell in zip(w, s["cells"]):
+            cells[cell] = ch
+    return cells, ids
+
+
 def domain_of(url):
     m = re.match(r"https?://([^/]+)", url or "")
     d = m.group(1) if m else (url or "")
     return d[4:] if d.startswith("www.") else d
 
 
-# ---- 힌트 1개 해석: 사람검수 > LLM prefill > top-sim 폴백 --------------------
-def resolve_hint(word, hints, ws):
-    """반환 {kind, text, url}. text 는 원문(cloze 전). url 은 출처(custom 은 None)."""
+def cloze_html(text, word):
+    """예문에서 정답을 _____ 로 가린 HTML 을 돌려준다. 매칭 실패 시 None.
+
+    None 을 절대 그대로 노출하지 않는 것이 정답 비공개 정책의 핵심이다.
+    """
+    span = find_surface(text, word)
+    if span is None:
+        return None
+    s, e = span
+    return html.escape(text[:s]) + '<span class="blank"></span>' + html.escape(text[e:])
+
+
+# ---- 단어별 '모든' 힌트 해석: 사람검수(custom) > LLM(primary+backups) > 코퍼스 폴백 ----
+def resolve_hints(word, hints, ws):
+    """반환 [{html, url, domain}, ...]. 매칭 성공분만 담는다(정답 노출 차단).
+
+    custom 힌트는 사람이 쓴 클루라 cloze 없이 그대로 1건만 돌려준다.
+    """
     sel = (hints.get("selections") or {}).get(word)
     if sel:
         custom = (sel.get("custom") or "").strip()
         if custom:
-            return {"kind": "custom", "text": custom, "url": None}
+            return [{"html": html.escape(custom), "url": None, "domain": None}]
+        cands = []
         pri = sel.get("primary")
         if pri and pri.get("text"):
-            return {"kind": "llm", "text": pri["text"], "url": pri.get("url")}
+            cands.append(pri)
+        for b in (sel.get("backups") or []):
+            if b.get("text"):
+                cands.append(b)
+        out = []
+        for c in cands:
+            ch = cloze_html(c["text"], word)
+            if ch is None:
+                continue
+            u = c.get("url")
+            out.append({"html": ch, "url": u, "domain": domain_of(u) if u else None})
+        if out:
+            return out
+    # 폴백: 선택 데이터가 없거나 전부 매칭 실패한 단어. 코퍼스 용례 상위에서 채운다.
     rec = ws.get(word) or {}
-    sents = rec.get("sentences") or []
-    if sents:
-        top = sents[0]
-        return {"kind": "fallback", "text": top.get("text", ""), "url": top.get("url")}
-    return {"kind": "missing", "text": "", "url": None}
+    out = []
+    for sent in (rec.get("sentences") or []):
+        ch = cloze_html(sent.get("text", ""), word)
+        if ch is None:
+            continue
+        u = sent.get("url")
+        out.append({"html": ch, "url": u, "domain": domain_of(u) if u else None})
+        if len(out) >= MAX_FALLBACK:
+            break
+    return out
 
 
-def clue_html(word, hint):
-    """cloze 적용한 클루 HTML 과 (출처 url 또는 None) 을 돌려준다.
+def build_slot_data(pz, grid, hints, ws):
+    """격자에서 슬롯 데이터를 만든다.
 
-    custom 힌트는 단어를 가리지 않고 그대로 보여 준다(사람이 쓴 클루).
+    반환 (slots, num, cellslot, pre_cells, slotdata).
+      cellslot: (r,c) -> {"A": id, "D": id}  (그 칸이 속한 가로/세로 슬롯 id)
+      slotdata: { "<id>": {dir, num, len, given, hints:[...]} }  (정답 단어 미포함)
     """
-    text = hint["text"]
-    if hint["kind"] == "missing" or not text:
-        return '<span class="missing">(예문 없음 - 검토 필요)</span>', None
-    if hint["kind"] == "custom":
-        return html.escape(text), None
-    span = find_surface(text, word)
-    if span is None:
-        # 정답을 문장에서 못 찾음(드묾). 가리지 못한 채 표시 + 표식.
-        return (html.escape(text) + ' <span class="missing">(빈칸 매칭 실패)</span>',
-                hint["url"])
-    s, e = span
-    body = (html.escape(text[:s]) + '<span class="blank"></span>' + html.escape(text[e:]))
-    return body, hint["url"]
+    slots = build_slots(grid)
+    num = cell_numbers(slots)
+    pre_cells, pre_ids = pick_prefill(slots, pz.get("assign") or {}, pz.get("themed", []),
+                                      int(env("CW_PREFILL", "3")))
+    assign = pz.get("assign") or {}
+    cellslot = {}
+    slotdata = {}
+    for s in slots:
+        for (r, c) in s["cells"]:
+            cellslot.setdefault((r, c), {})[s["dir"]] = s["id"]
+        word = assign.get(str(s["id"]))
+        given = s["id"] in pre_ids
+        if not word and not given:
+            continue
+        dir_label = "Across" if s["dir"] == "A" else "Down"
+        entry = {"dir": dir_label, "num": num[s["cells"][0]], "len": s["len"],
+                 "given": given, "hints": []}
+        if word and not given:
+            entry["hints"] = resolve_hints(word, hints, ws)
+        slotdata[str(s["id"])] = entry
+    return slots, num, cellslot, pre_cells, slotdata
+
+
+def grid_html(grid, num, cellslot, pre_cells, slotdata):
+    """격자를 HTML 로 렌더. 선완성 칸만 글자를 넣고, 나머지는 빈 칸."""
+    n = len(grid)
+    rows = []
+    for r in range(n):
+        for c in range(n):
+            ch = grid[r][c]
+            if ch == "#":
+                rows.append('<div class="cell block"></div>')
+                continue
+            cs = cellslot.get((r, c), {})
+            attrs = []
+            interactive = False
+            aid = cs.get("A")
+            did = cs.get("D")
+            if aid is not None and str(aid) in slotdata:
+                attrs.append(f'data-a="{aid}"')
+                interactive = True
+            if did is not None and str(did) in slotdata:
+                attrs.append(f'data-d="{did}"')
+                interactive = True
+            cls = "cell"
+            if interactive:
+                cls += " clue"
+            badge = ""
+            if (r, c) in num:
+                badge = f'<span class="num">{num[(r, c)]}</span>'
+            letter = ""
+            if (r, c) in pre_cells:
+                cls += " fill"
+                letter = html.escape(pre_cells[(r, c)].upper())
+            attr_str = (" " + " ".join(attrs)) if attrs else ""
+            rows.append(f'<div class="{cls}"{attr_str}>{badge}{letter}</div>')
+    return f'<div class="grid" style="--n:{n}">' + "".join(rows) + "</div>"
 
 
 def page_html(seq, pz, grid, hints, ws):
-    slots = build_slots(grid)
-    num = cell_numbers(slots)
-    across = sorted([s for s in slots if s["dir"] == "A"], key=lambda s: num[s["cells"][0]])
-    down = sorted([s for s in slots if s["dir"] == "D"], key=lambda s: num[s["cells"][0]])
-
-    refs = []  # 부록 각주: [(url)] (중복 url 은 합침)
-    ref_index = {}
-
-    def add_ref(url):
-        if not url:
-            return None
-        if url not in ref_index:
-            ref_index[url] = len(refs) + 1
-            refs.append(url)
-        return ref_index[url]
-
-    def col(title, slist):
-        rows = []
-        for s in slist:
-            word = (pz.get("assign") or {}).get(str(s["id"]))
-            n = num[s["cells"][0]]
-            if not word:
-                body = '<span class="missing">(빈 슬롯)</span>'
-                fn = ""
-            else:
-                hint = resolve_hint(word, hints, ws)
-                body, url = clue_html(word, hint)
-                r = add_ref(url)
-                fn = f'<sup class="fn">{r}</sup>' if r else ""
-            rows.append(
-                f'<li><span class="cn">{n}</span>'
-                f'<span class="enum">({s["len"]})</span>'
-                f'<span class="clue">{body}{fn}</span></li>'
-            )
-        return f'<section class="dir"><h2>{title}</h2><ol class="clues">' + "".join(rows) + "</ol></section>"
-
-    body_across = col("Across", across)
-    body_down = col("Down", down)
-
-    if refs:
-        items = "".join(
-            f'<li><a href="{html.escape(u)}" target="_blank" rel="noopener">{html.escape(domain_of(u))}</a></li>'
-            for u in refs
-        )
-        appendix = f'<section class="refs"><h2>Sources</h2><ol class="srclist">{items}</ol></section>'
-    else:
-        appendix = ""
+    slots, num, cellslot, pre_cells, slotdata = build_slot_data(pz, grid, hints, ws)
+    gh = grid_html(grid, num, cellslot, pre_cells, slotdata)
+    data_json = json.dumps(slotdata, ensure_ascii=False).replace("</", "<\\/")
 
     return f"""<!doctype html>
 <html lang="en">
@@ -181,12 +260,22 @@ def page_html(seq, pz, grid, hints, ws):
   <span class="seq">puzzle {seq:04d}</span>
 </header>
 <main>
-  <p class="lead">Fill each blank from its sentence. Answers are not shown.</p>
-  {body_across}
-  {body_down}
-  {appendix}
+  <p class="lead">Tap a square to read its clue. Answers are not shown.</p>
+  {gh}
 </main>
 <footer class="bot">{html.escape(TITLE)}</footer>
+
+<aside id="sheet" hidden role="dialog" aria-labelledby="sheet-title">
+  <div class="sheet-handle" aria-hidden="true"></div>
+  <header class="sheet-head">
+    <h2 id="sheet-title"></h2>
+    <button id="sheet-close" type="button" aria-label="Close">×</button>
+  </header>
+  <div id="sheet-body"></div>
+</aside>
+
+<script type="application/json" id="slot-data">{data_json}</script>
+<script src="/app.js"></script>
 </body>
 </html>
 """
@@ -207,7 +296,7 @@ def index_html(seqs):
 <header class="top"><span class="mark">{html.escape(WORDMARK)}</span><span class="seq">{len(seqs)} puzzles</span></header>
 <main>
   <p class="lead">{html.escape(TITLE)} — crossword hint index.</p>
-  <nav class="grid">{cells}</nav>
+  <nav class="index">{cells}</nav>
 </main>
 <footer class="bot">{html.escape(TITLE)}</footer>
 </body>
@@ -224,7 +313,7 @@ NOT_FOUND = f"""<!doctype html>
 <footer class="bot">{html.escape(TITLE)}</footer></body></html>
 """
 
-CSS = """:root{--fg:#111;--bg:#fff;--mut:#888;--line:#ddd}
+CSS = """:root{--fg:#111;--bg:#fff;--mut:#888;--line:#ddd;--sel:#cfe3ff;--panel:#fff}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{font-family:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -233,32 +322,201 @@ header.top,footer.bot{display:flex;justify-content:space-between;align-items:bas
   padding:14px 20px;border-bottom:1px solid var(--line);font-size:12px;letter-spacing:.04em}
 footer.bot{border-bottom:none;border-top:1px solid var(--line);color:var(--mut);margin-top:40px}
 .mark{font-weight:500}.seq{color:var(--mut)}
-main{max-width:680px;margin:0 auto;padding:24px 20px 8px}
-.lead{color:var(--mut);font-size:13px;margin:0 0 24px}
-h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;color:var(--mut);
-  border-bottom:1px solid var(--line);padding-bottom:6px;margin:28px 0 12px}
-ol.clues{list-style:none;margin:0;padding:0}
-ol.clues li{display:grid;grid-template-columns:2.2em 2.6em 1fr;gap:.4em;
-  padding:8px 0;border-bottom:1px dotted var(--line);align-items:start}
-.cn{font-weight:700;text-align:right}
-.enum{color:var(--mut);font-size:12px;text-align:right;padding-top:1px}
-.clue{}
-.blank{display:inline-block;min-width:3.2em;border-bottom:1.5px solid var(--fg);
-  vertical-align:baseline;margin:0 .12em}
-.fn{font-size:.7em;color:var(--mut);margin-left:.15em}
-.missing{color:#b00;font-size:12px}
-.refs{margin-top:32px}
-ol.srclist{font-size:12px;color:var(--mut);padding-left:1.6em}
-ol.srclist a{color:var(--mut)}
-nav.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;margin-top:16px}
-nav.grid a{border:1px solid var(--line);padding:10px 0;text-align:center;text-decoration:none;
+main{max-width:520px;margin:0 auto;padding:20px 16px 8px}
+.lead{color:var(--mut);font-size:13px;margin:0 0 18px;text-align:center}
+
+/* 격자: 카드와 동일 모양. 칸 글자 크기는 칸 폭에 비례. */
+.grid{display:grid;grid-template-columns:repeat(var(--n),1fr);
+  width:min(92vw,440px);margin:0 auto;border:2px solid var(--fg);
+  font-size:calc(min(92vw,440px) / var(--n) * 0.46)}
+.cell{position:relative;aspect-ratio:1;border:1px solid var(--line);
+  display:flex;align-items:center;justify-content:center;font-weight:700;
+  -webkit-user-select:none;user-select:none}
+.cell.block{background:var(--fg);border-color:var(--fg)}
+.cell.clue{cursor:pointer}
+.cell .num{position:absolute;top:1px;left:2px;font-size:.42em;line-height:1;
+  font-weight:400;color:var(--mut)}
+.cell.sel{background:var(--sel)}
+.cell.sel.fill{background:var(--sel)}
+
+/* 하단 시트(비모달): 격자는 위에서 계속 탭 가능. 시트만 아래에 떠 있다. */
+#sheet{position:fixed;left:0;right:0;bottom:0;z-index:11;background:var(--panel);
+  border-top:1px solid var(--line);border-radius:16px 16px 0 0;
+  max-height:80vh;overflow-y:auto;padding:0 18px 28px;
+  box-shadow:0 -8px 30px rgba(0,0,0,.18);
+  transform:translateY(0);transition:transform .22s ease}
+#sheet[hidden]{display:none}
+#sheet.closing{transform:translateY(100%)}
+.sheet-handle{width:38px;height:4px;border-radius:2px;background:var(--line);
+  margin:10px auto 4px}
+.sheet-head{display:flex;justify-content:space-between;align-items:center;
+  position:sticky;top:0;background:var(--panel);padding:6px 0 10px;
+  border-bottom:1px solid var(--line)}
+.sheet-head h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;
+  color:var(--mut);margin:0;font-weight:500}
+#sheet-close{background:none;border:none;color:var(--mut);font-size:26px;
+  line-height:1;cursor:pointer;padding:0 4px}
+#sheet-body{padding-top:14px}
+
+/* 예문: 본문만 비례폰트. 출처는 모노 작은 글씨. */
+.ex{padding:0 0 16px;margin:0 0 16px;border-bottom:1px dotted var(--line)}
+.ex:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.ex .sent{font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,
+  Helvetica,Arial,sans-serif;font-size:16px;line-height:1.7;margin:0 0 8px}
+.ex .src{font-size:12px;color:var(--mut);text-decoration:none}
+.ex .src::before{content:"↳ "}
+.ex .src:hover{text-decoration:underline}
+.blank{display:inline-block;min-width:2.6em;border-bottom:2px solid currentColor;
+  vertical-align:baseline;margin:0 .15em}
+.note{color:var(--mut);font-size:13px;margin:4px 0}
+
+nav.index{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px;margin-top:16px}
+nav.index a{border:1px solid var(--line);padding:10px 0;text-align:center;text-decoration:none;
   color:var(--fg);font-size:13px}
-nav.grid a:hover{background:#f4f4f4}
+nav.index a:hover{background:#f4f4f4}
 a{color:#1a5fb4}
 @media(prefers-color-scheme:dark){
-  :root{--fg:#eee;--bg:#111;--mut:#888;--line:#333}
-  nav.grid a:hover{background:#1a1a1a}a{color:#7bb}.missing{color:#e88}
+  :root{--fg:#eee;--bg:#111;--mut:#999;--line:#333;--sel:#274868;--panel:#1a1a1a}
+  nav.index a:hover{background:#1a1a1a}a{color:#7bb}
 }
+"""
+
+APP_JS = """// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달)로 해당 단어 힌트 표시.
+// 비모달이라 시트가 떠 있어도 격자는 계속 탭된다(다른 단어 전환/방향 토글 가능).
+// 정적 사이트라 의존성 없음. 데이터는 페이지 인라인 JSON(#slot-data).
+(function () {
+  var data = {};
+  try { data = JSON.parse(document.getElementById('slot-data').textContent || '{}'); }
+  catch (e) { data = {}; }
+
+  var grid = document.querySelector('.grid');
+  var sheet = document.getElementById('sheet');
+  var titleEl = document.getElementById('sheet-title');
+  var bodyEl = document.getElementById('sheet-body');
+  var closeBtn = document.getElementById('sheet-close');
+  if (!grid || !sheet) return;
+
+  var current = null;     // 현재 선택 슬롯 id (문자열)
+
+  function clearSel() {
+    var on = grid.querySelectorAll('.cell.sel');
+    for (var i = 0; i < on.length; i++) on[i].classList.remove('sel');
+  }
+
+  function highlight(id) {
+    clearSel();
+    var cells = grid.querySelectorAll('[data-a="' + id + '"],[data-d="' + id + '"]');
+    for (var i = 0; i < cells.length; i++) cells[i].classList.add('sel');
+  }
+
+  function render(id) {
+    var slot = data[id];
+    if (!slot) return;
+    titleEl.textContent = slot.dir + ' ' + slot.num + ' · ' + slot.len + ' letters';
+    bodyEl.innerHTML = '';
+    if (slot.given) {
+      var g = document.createElement('p');
+      g.className = 'note';
+      g.textContent = 'This word is already filled in on the grid.';
+      bodyEl.appendChild(g);
+      return;
+    }
+    if (!slot.hints || !slot.hints.length) {
+      var nn = document.createElement('p');
+      nn.className = 'note';
+      nn.textContent = 'No example available for this word yet.';
+      bodyEl.appendChild(nn);
+      return;
+    }
+    for (var i = 0; i < slot.hints.length; i++) {
+      var h = slot.hints[i];
+      var ex = document.createElement('div');
+      ex.className = 'ex';
+      var p = document.createElement('p');
+      p.className = 'sent';
+      p.innerHTML = h.html;
+      ex.appendChild(p);
+      if (h.url) {
+        var a = document.createElement('a');
+        a.className = 'src';
+        a.href = h.url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = h.domain || 'source';
+        ex.appendChild(a);
+      }
+      bodyEl.appendChild(ex);
+    }
+  }
+
+  function openSheet(id) {
+    current = id;
+    highlight(id);
+    render(id);
+    sheet.hidden = false;
+    sheet.classList.remove('closing');
+    // 선택 칸이 시트에 가리지 않도록 위쪽으로 부드럽게 스크롤.
+    var first = grid.querySelector('.cell.sel');
+    if (first && first.scrollIntoView) first.scrollIntoView({block: 'center', behavior: 'smooth'});
+  }
+
+  function closeSheet() {
+    if (sheet.hidden) return;
+    sheet.classList.add('closing');
+    clearSel();
+    current = null;
+    var done = function () {
+      sheet.hidden = true;
+      sheet.classList.remove('closing');
+      sheet.removeEventListener('transitionend', done);
+    };
+    sheet.addEventListener('transitionend', done);
+    setTimeout(done, 300);  // transition 미발생 환경 대비 폴백
+  }
+
+  // 비모달이라 문서 전역에서 탭을 받는다:
+  //  - 클루 칸 탭 -> 선택/전환(교차칸 재탭은 방향 토글)
+  //  - 시트 내부 탭 -> 무시
+  //  - 그 외(검은칸/여백) 탭 -> 시트 닫기
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (sheet.contains(t)) return;
+    var cell = t.closest ? t.closest('.cell.clue') : null;
+    if (!cell) { closeSheet(); return; }
+    var a = cell.getAttribute('data-a');
+    var d = cell.getAttribute('data-d');
+    var opts = [];
+    if (a) opts.push(a);
+    if (d) opts.push(d);
+    if (!opts.length) { closeSheet(); return; }
+    var pick;
+    if (opts.length === 1) {
+      pick = opts[0];
+    } else if (current && opts.indexOf(current) !== -1) {
+      pick = opts[(opts.indexOf(current) + 1) % 2];  // 같은 교차칸 재탭 -> 방향 전환
+    } else {
+      pick = opts[0];
+    }
+    openSheet(pick);
+  });
+
+  closeBtn.addEventListener('click', closeSheet);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !sheet.hidden) closeSheet();
+  });
+
+  // 핸들 스와이프다운으로 닫기 (모바일).
+  var startY = null;
+  sheet.addEventListener('touchstart', function (e) {
+    if (e.touches && e.touches.length === 1) startY = e.touches[0].clientY;
+  }, { passive: true });
+  sheet.addEventListener('touchmove', function (e) {
+    if (startY === null) return;
+    var dy = e.touches[0].clientY - startY;
+    if (dy > 60 && sheet.scrollTop <= 0) { closeSheet(); startY = null; }
+  }, { passive: true });
+  sheet.addEventListener('touchend', function () { startY = null; });
+})();
 """
 
 
@@ -278,27 +536,24 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     seqs = []
-    n_clue = n_custom = n_llm = n_fallback = n_missing = n_unblanked = 0
+    n_slot = n_given = n_with = n_empty = 0
+    ex_total = 0
     for i, pz in enumerate(puzzles):
         seq = i + 1
         grid = grid_by_id.get(pz["template_id"])
         if grid is None:
             print(f"  ! seq {seq:04d}: template {pz['template_id']} 없음, 건너뜀", flush=True)
             continue
-        # 통계용 사전 집계
-        slots = build_slots(grid)
-        for s in slots:
-            w = (pz.get("assign") or {}).get(str(s["id"]))
-            if not w:
-                continue
-            n_clue += 1
-            h = resolve_hint(w, hints, ws)
-            n_custom += h["kind"] == "custom"
-            n_llm += h["kind"] == "llm"
-            n_fallback += h["kind"] == "fallback"
-            n_missing += h["kind"] == "missing"
-            if h["kind"] in ("llm", "fallback") and h["text"] and find_surface(h["text"], w) is None:
-                n_unblanked += 1
+        slots, num, cellslot, pre_cells, slotdata = build_slot_data(pz, grid, hints, ws)
+        for sid, e in slotdata.items():
+            n_slot += 1
+            if e["given"]:
+                n_given += 1
+            elif e["hints"]:
+                n_with += 1
+                ex_total += len(e["hints"])
+            else:
+                n_empty += 1
         d = os.path.join(out_dir, f"{seq:04d}")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "index.html"), "w", encoding="utf-8") as f:
@@ -311,12 +566,17 @@ def main():
         f.write(NOT_FOUND)
     with open(os.path.join(out_dir, "style.css"), "w", encoding="utf-8") as f:
         f.write(CSS)
+    with open(os.path.join(out_dir, "app.js"), "w", encoding="utf-8") as f:
+        f.write(APP_JS)
     with open(os.path.join(out_dir, "_headers"), "w", encoding="utf-8") as f:
         f.write("/*\n  X-Robots-Tag: noindex\n")
 
+    solvable = n_with + n_empty
+    avg = ex_total / n_with if n_with else 0
     print(f"빌드 완료: {len(seqs)} 페이지 → {out_dir}", flush=True)
-    print(f"  클루 {n_clue}개 | 출처: llm {n_llm} / 폴백 {n_fallback} / custom {n_custom} / 없음 {n_missing}", flush=True)
-    print(f"  힌트데이터: {hints_name} | 빈칸매칭 실패 {n_unblanked}개", flush=True)
+    print(f"  슬롯 {n_slot}개 | 선완성(given) {n_given} / 힌트있음 {n_with} / 힌트없음 {n_empty}", flush=True)
+    print(f"  풀 단어 {solvable}개 | 예문 총 {ex_total}개 (단어당 평균 {avg:.2f})", flush=True)
+    print(f"  힌트데이터: {hints_name}", flush=True)
     print(f"  base={BASE_URL}  생성시각={datetime.datetime.now().isoformat(timespec='seconds')}", flush=True)
 
 

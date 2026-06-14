@@ -27,6 +27,9 @@ docs/print/
 __pycache__/
 *.pyc
 
+# Wrangler 로컬 빌드 캐시
+.wrangler/
+
 # 스크래치/임시 검토 산출물 (로컬 정리 대상)
 .playwright-mcp/
 docs/_stale/
