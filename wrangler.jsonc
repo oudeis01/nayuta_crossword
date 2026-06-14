@@ -1,0 +1,10 @@
+{
+  // Cloudflare Workers 정적 자산(Static Assets) 배포 설정.
+  // 사전 빌드된 public/ 을 그대로 서빙한다(빌드 단계 없음).
+  // 이 파일이 있으면 Workers Builds의 프레임워크 자동 감지(루트 config.yaml -> Hugo 오감지)가 비활성화된다.
+  "name": "nayuta-crossword",
+  "compatibility_date": "2025-06-01",
+  "assets": {
+    "directory": "./public"
+  }
+}
