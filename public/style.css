@@ -10,10 +10,19 @@ footer.bot{border-bottom:none;border-top:1px solid var(--line);color:var(--mut);
 main{max-width:520px;margin:0 auto;padding:20px 16px 8px}
 .lead{color:var(--mut);font-size:13px;margin:0 0 18px;text-align:center}
 
+/* 퍼즐 페이지: 상하 분할 앱 셸. 위=격자(스크롤), 아래=힌트 패널. 서로 안 겹친다.
+   (index/404 는 .puzzle 미적용 -> 일반 흐름.) */
+body.puzzle{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+body.puzzle header.top{flex:0 0 auto}
+.stage{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  display:flex;flex-direction:column;padding:18px 16px 8px}
+.stage .lead{flex:0 0 auto}
+.stage>footer.bot{margin-top:auto}
+
 /* 격자: 카드와 동일 모양. 칸 글자 크기는 칸 폭에 비례. */
 .grid{display:grid;grid-template-columns:repeat(var(--n),1fr);
-  width:min(92vw,440px);margin:0 auto;border:2px solid var(--fg);
-  font-size:calc(min(92vw,440px) / var(--n) * 0.46)}
+  width:min(100vw - 32px,440px);margin:0 auto;border:2px solid var(--fg);
+  font-size:calc(min(100vw - 32px,440px) / var(--n) * 0.46)}
 .cell{position:relative;aspect-ratio:1;border:1px solid var(--line);
   display:flex;align-items:center;justify-content:center;font-weight:700;
   -webkit-user-select:none;user-select:none}
@@ -24,24 +33,27 @@ main{max-width:520px;margin:0 auto;padding:20px 16px 8px}
 .cell.sel{background:var(--sel)}
 .cell.sel.fill{background:var(--sel)}
 
-/* 하단 시트(비모달): 격자는 위에서 계속 탭 가능. 시트만 아래에 떠 있다. */
-#sheet{position:fixed;left:0;right:0;bottom:0;z-index:11;background:var(--panel);
-  border-top:1px solid var(--line);border-radius:16px 16px 0 0;
-  max-height:80vh;overflow-y:auto;padding:0 18px 28px;
-  box-shadow:0 -8px 30px rgba(0,0,0,.18);
-  transform:translateY(0);transition:transform .22s ease}
-#sheet[hidden]{display:none}
-#sheet.closing{transform:translateY(100%)}
-.sheet-handle{width:38px;height:4px;border-radius:2px;background:var(--line);
-  margin:10px auto 4px}
-.sheet-head{display:flex;justify-content:space-between;align-items:center;
-  position:sticky;top:0;background:var(--panel);padding:6px 0 10px;
+/* 힌트 패널: 분할의 아래 칸. 격자와 겹치지 않는 일반 흐름 요소. */
+#hints{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
+  max-height:48dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:0 18px 22px;box-shadow:0 -6px 24px rgba(0,0,0,.12);
+  transform:translateY(8px);opacity:0;transition:transform .18s ease,opacity .18s ease}
+#hints[hidden]{display:none}
+#hints.in{transform:none;opacity:1}
+.hints-head{display:flex;align-items:center;gap:10px;
+  position:sticky;top:0;background:var(--panel);padding:12px 0 10px;
   border-bottom:1px solid var(--line)}
-.sheet-head h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;
-  color:var(--mut);margin:0;font-weight:500}
-#sheet-close{background:none;border:none;color:var(--mut);font-size:26px;
+.hints-head h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;
+  color:var(--mut);margin:0;font-weight:500;flex:1 1 auto}
+#hints-close{flex:0 0 auto;background:none;border:none;color:var(--mut);font-size:26px;
   line-height:1;cursor:pointer;padding:0 4px}
-#sheet-body{padding-top:14px}
+.dirtoggle{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.dirtoggle[hidden]{display:none}
+.dirtoggle button{background:none;border:none;font:inherit;font-size:11px;
+  letter-spacing:.06em;padding:5px 9px;color:var(--mut);cursor:pointer;white-space:nowrap}
+.dirtoggle button+button{border-left:1px solid var(--line)}
+.dirtoggle button.on{background:var(--sel);color:var(--fg)}
+#hints-body{padding-top:14px}
 
 /* 예문: 본문만 비례폰트. 출처는 모노 작은 글씨. */
 .ex{padding:0 0 16px;margin:0 0 16px;border-bottom:1px dotted var(--line)}

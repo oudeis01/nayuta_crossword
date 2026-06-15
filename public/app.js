@@ -1,5 +1,6 @@
-// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달)로 해당 단어 힌트 표시.
-// 비모달이라 시트가 떠 있어도 격자는 계속 탭된다(다른 단어 전환/방향 토글 가능).
+// 상하 분할: 격자 칸 탭 -> 단어 선택/토글 -> 화면 하단 고정 패널에 그 단어 힌트 표시.
+// 패널은 격자와 겹치지 않는 별개 영역이라 격자는 항상 보이고 계속 탭된다(재탭 토글 정상).
+// 교차칸은 패널 헤더의 Across/Down 토글 버튼으로도 방향 전환 가능.
 // 정적 사이트라 의존성 없음. 데이터는 페이지 인라인 JSON(#slot-data).
 (function () {
   var data = {};
@@ -7,13 +8,15 @@
   catch (e) { data = {}; }
 
   var grid = document.querySelector('.grid');
-  var sheet = document.getElementById('sheet');
-  var titleEl = document.getElementById('sheet-title');
-  var bodyEl = document.getElementById('sheet-body');
-  var closeBtn = document.getElementById('sheet-close');
-  if (!grid || !sheet) return;
+  var panel = document.getElementById('hints');
+  var titleEl = document.getElementById('hints-title');
+  var toggleEl = document.getElementById('hints-toggle');
+  var bodyEl = document.getElementById('hints-body');
+  var closeBtn = document.getElementById('hints-close');
+  if (!grid || !panel) return;
 
-  var current = null;     // 현재 선택 슬롯 id (문자열)
+  var current = null;   // 현재 선택 슬롯 id (문자열)
+  var curOpts = [];     // 마지막 탭한 칸의 [가로, 세로] 슬롯 id (방향 토글 대상)
 
   function clearSel() {
     var on = grid.querySelectorAll('.cell.sel');
@@ -26,10 +29,24 @@
     for (var i = 0; i < cells.length; i++) cells[i].classList.add('sel');
   }
 
-  function render(id) {
-    var slot = data[id];
-    if (!slot) return;
-    titleEl.textContent = slot.dir + ' ' + slot.num + ' · ' + slot.len + ' letters';
+  function renderToggle() {
+    toggleEl.innerHTML = '';
+    if (curOpts.length < 2) { toggleEl.hidden = true; return; }
+    toggleEl.hidden = false;
+    for (var i = 0; i < curOpts.length; i++) {
+      (function (id) {
+        var slot = data[id];
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = slot ? (slot.dir + ' ' + slot.num) : id;
+        if (id === current) b.className = 'on';
+        b.addEventListener('click', function () { if (id !== current) select(id); });
+        toggleEl.appendChild(b);
+      })(curOpts[i]);
+    }
+  }
+
+  function renderBody(slot) {
     bodyEl.innerHTML = '';
     if (slot.given) {
       var g = document.createElement('p');
@@ -66,46 +83,46 @@
     }
   }
 
-  function openSheet(id) {
+  function select(id) {
+    var slot = data[id];
+    if (!slot) return;
     current = id;
     highlight(id);
-    render(id);
-    sheet.hidden = false;
-    sheet.classList.remove('closing');
-    // 선택 칸이 시트에 가리지 않도록 위쪽으로 부드럽게 스크롤.
+    titleEl.textContent = slot.dir + ' ' + slot.num + ' · ' + slot.len + ' letters';
+    renderToggle();
+    renderBody(slot);
+    panel.hidden = false;
+    requestAnimationFrame(function () { panel.classList.add('in'); });
+    // 선택 칸이 패널 위쪽 격자 영역 안에 보이도록 스크롤(패널과 겹치지 않음).
     var first = grid.querySelector('.cell.sel');
     if (first && first.scrollIntoView) first.scrollIntoView({block: 'center', behavior: 'smooth'});
   }
 
-  function closeSheet() {
-    if (sheet.hidden) return;
-    sheet.classList.add('closing');
+  function closePanel() {
+    if (panel.hidden) return;
+    panel.classList.remove('in');
     clearSel();
     current = null;
-    var done = function () {
-      sheet.hidden = true;
-      sheet.classList.remove('closing');
-      sheet.removeEventListener('transitionend', done);
-    };
-    sheet.addEventListener('transitionend', done);
-    setTimeout(done, 300);  // transition 미발생 환경 대비 폴백
+    curOpts = [];
+    panel.hidden = true;
   }
 
-  // 비모달이라 문서 전역에서 탭을 받는다:
+  // 문서 전역 탭 처리:
   //  - 클루 칸 탭 -> 선택/전환(교차칸 재탭은 방향 토글)
-  //  - 시트 내부 탭 -> 무시
-  //  - 그 외(검은칸/여백) 탭 -> 시트 닫기
+  //  - 패널 내부 탭 -> 패널이 처리(닫기/토글 버튼)
+  //  - 그 외(검은칸/여백) 탭 -> 패널 닫기
   document.addEventListener('click', function (e) {
     var t = e.target;
-    if (sheet.contains(t)) return;
+    if (panel.contains(t)) return;
     var cell = t.closest ? t.closest('.cell.clue') : null;
-    if (!cell) { closeSheet(); return; }
+    if (!cell) { closePanel(); return; }
     var a = cell.getAttribute('data-a');
     var d = cell.getAttribute('data-d');
     var opts = [];
     if (a) opts.push(a);
     if (d) opts.push(d);
-    if (!opts.length) { closeSheet(); return; }
+    if (!opts.length) { closePanel(); return; }
+    curOpts = opts;
     var pick;
     if (opts.length === 1) {
       pick = opts[0];
@@ -114,23 +131,11 @@
     } else {
       pick = opts[0];
     }
-    openSheet(pick);
+    select(pick);
   });
 
-  closeBtn.addEventListener('click', closeSheet);
+  closeBtn.addEventListener('click', closePanel);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !sheet.hidden) closeSheet();
+    if (e.key === 'Escape' && !panel.hidden) closePanel();
   });
-
-  // 핸들 스와이프다운으로 닫기 (모바일).
-  var startY = null;
-  sheet.addEventListener('touchstart', function (e) {
-    if (e.touches && e.touches.length === 1) startY = e.touches[0].clientY;
-  }, { passive: true });
-  sheet.addEventListener('touchmove', function (e) {
-    if (startY === null) return;
-    var dy = e.touches[0].clientY - startY;
-    if (dy > 60 && sheet.scrollTop <= 0) { closeSheet(); startY = null; }
-  }, { passive: true });
-  sheet.addEventListener('touchend', function () { startY = null; });
 })();

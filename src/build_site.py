@@ -2,8 +2,9 @@
 """퍼즐별 공개 힌트 페이지 정적 사이트 생성 (Cloudflare Workers Static Assets용).
 
 각 퍼즐(원본 240개)을 한 페이지로 만든다. 한 장 = 인쇄 카드와 동일한 십자말풀이
-격자를 그대로 렌더한 것이다. 칸을 탭하면 그 단어의 모든 예문 힌트가 하단 시트
-(bottom sheet)로 함께 뜬다. 정답 글자는 페이지에 넣지 않는다(선완성 단어만 예외;
+격자를 그대로 렌더한 것이다. 칸을 탭하면 그 단어의 모든 예문 힌트가 화면 하단의
+고정 패널에 뜬다(격자와 겹치지 않는 상하 분할 레이아웃이라 격자는 항상 보이고
+계속 탭된다). 정답 글자는 페이지에 넣지 않는다(선완성 단어만 예외;
 카드에 이미 인쇄되어 공개된 글자라 격자에 같이 표시한다). 예문은 정답을 _____ 로
 가린 cloze 이며, 출처 링크는 새 탭으로 연다.
 
@@ -12,8 +13,10 @@ URL 규약: /NNNN  (4자리 0패딩 seq). 카드 앞면 seq(= 원본 1-based 인
   디렉터리 방식(public/0101/index.html)이라 클린 URL 로 뜬다.
 
 상호작용 모델(확정):
+  - 화면을 상하 분할: 위=격자(스크롤), 아래=힌트 고정 패널. 둘이 겹치지 않는다.
   - 빈칸 탭 -> 그 칸이 속한 단어 선택+하이라이트, 같은 칸 재탭 -> 가로/세로 전환.
-  - 선택 단어의 예문 힌트를 전부 펼쳐 하단 시트에 표시(본문은 비례폰트, UI 는 모노).
+    교차칸은 패널 헤더의 Across/Down 토글로도 전환(격자를 안 가려 재탭도 정상 작동).
+  - 선택 단어의 예문 힌트를 전부 펼쳐 아래 패널에 표시(본문은 비례폰트, UI 는 모노).
   - 텍스트 클루 리스트는 두지 않는다(격자만).
 
 입력(환경변수로 교체 가능):
@@ -254,25 +257,25 @@ def page_html(seq, pz, grid, hints, ws):
 <title>{seq:04d} · {html.escape(TITLE)}</title>
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body class="puzzle">
 <header class="top">
   <span class="mark">{html.escape(WORDMARK)}</span>
   <span class="seq">puzzle {seq:04d}</span>
 </header>
-<main>
+<div class="stage" id="stage">
   <p class="lead">Tap a square to read its clue. Answers are not shown.</p>
   {gh}
-</main>
-<footer class="bot">{html.escape(TITLE)}</footer>
+  <footer class="bot">{html.escape(TITLE)}</footer>
+</div>
 
-<aside id="sheet" hidden role="dialog" aria-labelledby="sheet-title">
-  <div class="sheet-handle" aria-hidden="true"></div>
-  <header class="sheet-head">
-    <h2 id="sheet-title"></h2>
-    <button id="sheet-close" type="button" aria-label="Close">×</button>
+<section id="hints" hidden aria-live="polite" aria-labelledby="hints-title">
+  <header class="hints-head">
+    <h2 id="hints-title"></h2>
+    <div id="hints-toggle" class="dirtoggle" role="group" aria-label="Across or Down" hidden></div>
+    <button id="hints-close" type="button" aria-label="Close">×</button>
   </header>
-  <div id="sheet-body"></div>
-</aside>
+  <div id="hints-body"></div>
+</section>
 
 <script type="application/json" id="slot-data">{data_json}</script>
 <script src="/app.js"></script>
@@ -325,10 +328,19 @@ footer.bot{border-bottom:none;border-top:1px solid var(--line);color:var(--mut);
 main{max-width:520px;margin:0 auto;padding:20px 16px 8px}
 .lead{color:var(--mut);font-size:13px;margin:0 0 18px;text-align:center}
 
+/* 퍼즐 페이지: 상하 분할 앱 셸. 위=격자(스크롤), 아래=힌트 패널. 서로 안 겹친다.
+   (index/404 는 .puzzle 미적용 -> 일반 흐름.) */
+body.puzzle{height:100vh;height:100dvh;display:flex;flex-direction:column;overflow:hidden}
+body.puzzle header.top{flex:0 0 auto}
+.stage{flex:1 1 auto;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  display:flex;flex-direction:column;padding:18px 16px 8px}
+.stage .lead{flex:0 0 auto}
+.stage>footer.bot{margin-top:auto}
+
 /* 격자: 카드와 동일 모양. 칸 글자 크기는 칸 폭에 비례. */
 .grid{display:grid;grid-template-columns:repeat(var(--n),1fr);
-  width:min(92vw,440px);margin:0 auto;border:2px solid var(--fg);
-  font-size:calc(min(92vw,440px) / var(--n) * 0.46)}
+  width:min(100vw - 32px,440px);margin:0 auto;border:2px solid var(--fg);
+  font-size:calc(min(100vw - 32px,440px) / var(--n) * 0.46)}
 .cell{position:relative;aspect-ratio:1;border:1px solid var(--line);
   display:flex;align-items:center;justify-content:center;font-weight:700;
   -webkit-user-select:none;user-select:none}
@@ -339,24 +351,27 @@ main{max-width:520px;margin:0 auto;padding:20px 16px 8px}
 .cell.sel{background:var(--sel)}
 .cell.sel.fill{background:var(--sel)}
 
-/* 하단 시트(비모달): 격자는 위에서 계속 탭 가능. 시트만 아래에 떠 있다. */
-#sheet{position:fixed;left:0;right:0;bottom:0;z-index:11;background:var(--panel);
-  border-top:1px solid var(--line);border-radius:16px 16px 0 0;
-  max-height:80vh;overflow-y:auto;padding:0 18px 28px;
-  box-shadow:0 -8px 30px rgba(0,0,0,.18);
-  transform:translateY(0);transition:transform .22s ease}
-#sheet[hidden]{display:none}
-#sheet.closing{transform:translateY(100%)}
-.sheet-handle{width:38px;height:4px;border-radius:2px;background:var(--line);
-  margin:10px auto 4px}
-.sheet-head{display:flex;justify-content:space-between;align-items:center;
-  position:sticky;top:0;background:var(--panel);padding:6px 0 10px;
+/* 힌트 패널: 분할의 아래 칸. 격자와 겹치지 않는 일반 흐름 요소. */
+#hints{flex:0 0 auto;background:var(--panel);border-top:1px solid var(--line);
+  max-height:48dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  padding:0 18px 22px;box-shadow:0 -6px 24px rgba(0,0,0,.12);
+  transform:translateY(8px);opacity:0;transition:transform .18s ease,opacity .18s ease}
+#hints[hidden]{display:none}
+#hints.in{transform:none;opacity:1}
+.hints-head{display:flex;align-items:center;gap:10px;
+  position:sticky;top:0;background:var(--panel);padding:12px 0 10px;
   border-bottom:1px solid var(--line)}
-.sheet-head h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;
-  color:var(--mut);margin:0;font-weight:500}
-#sheet-close{background:none;border:none;color:var(--mut);font-size:26px;
+.hints-head h2{font-size:12px;text-transform:uppercase;letter-spacing:.12em;
+  color:var(--mut);margin:0;font-weight:500;flex:1 1 auto}
+#hints-close{flex:0 0 auto;background:none;border:none;color:var(--mut);font-size:26px;
   line-height:1;cursor:pointer;padding:0 4px}
-#sheet-body{padding-top:14px}
+.dirtoggle{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.dirtoggle[hidden]{display:none}
+.dirtoggle button{background:none;border:none;font:inherit;font-size:11px;
+  letter-spacing:.06em;padding:5px 9px;color:var(--mut);cursor:pointer;white-space:nowrap}
+.dirtoggle button+button{border-left:1px solid var(--line)}
+.dirtoggle button.on{background:var(--sel);color:var(--fg)}
+#hints-body{padding-top:14px}
 
 /* 예문: 본문만 비례폰트. 출처는 모노 작은 글씨. */
 .ex{padding:0 0 16px;margin:0 0 16px;border-bottom:1px dotted var(--line)}
@@ -381,8 +396,9 @@ a{color:#1a5fb4}
 }
 """
 
-APP_JS = """// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달)로 해당 단어 힌트 표시.
-// 비모달이라 시트가 떠 있어도 격자는 계속 탭된다(다른 단어 전환/방향 토글 가능).
+APP_JS = """// 상하 분할: 격자 칸 탭 -> 단어 선택/토글 -> 화면 하단 고정 패널에 그 단어 힌트 표시.
+// 패널은 격자와 겹치지 않는 별개 영역이라 격자는 항상 보이고 계속 탭된다(재탭 토글 정상).
+// 교차칸은 패널 헤더의 Across/Down 토글 버튼으로도 방향 전환 가능.
 // 정적 사이트라 의존성 없음. 데이터는 페이지 인라인 JSON(#slot-data).
 (function () {
   var data = {};
@@ -390,13 +406,15 @@ APP_JS = """// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달
   catch (e) { data = {}; }
 
   var grid = document.querySelector('.grid');
-  var sheet = document.getElementById('sheet');
-  var titleEl = document.getElementById('sheet-title');
-  var bodyEl = document.getElementById('sheet-body');
-  var closeBtn = document.getElementById('sheet-close');
-  if (!grid || !sheet) return;
+  var panel = document.getElementById('hints');
+  var titleEl = document.getElementById('hints-title');
+  var toggleEl = document.getElementById('hints-toggle');
+  var bodyEl = document.getElementById('hints-body');
+  var closeBtn = document.getElementById('hints-close');
+  if (!grid || !panel) return;
 
-  var current = null;     // 현재 선택 슬롯 id (문자열)
+  var current = null;   // 현재 선택 슬롯 id (문자열)
+  var curOpts = [];     // 마지막 탭한 칸의 [가로, 세로] 슬롯 id (방향 토글 대상)
 
   function clearSel() {
     var on = grid.querySelectorAll('.cell.sel');
@@ -409,10 +427,24 @@ APP_JS = """// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달
     for (var i = 0; i < cells.length; i++) cells[i].classList.add('sel');
   }
 
-  function render(id) {
-    var slot = data[id];
-    if (!slot) return;
-    titleEl.textContent = slot.dir + ' ' + slot.num + ' · ' + slot.len + ' letters';
+  function renderToggle() {
+    toggleEl.innerHTML = '';
+    if (curOpts.length < 2) { toggleEl.hidden = true; return; }
+    toggleEl.hidden = false;
+    for (var i = 0; i < curOpts.length; i++) {
+      (function (id) {
+        var slot = data[id];
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = slot ? (slot.dir + ' ' + slot.num) : id;
+        if (id === current) b.className = 'on';
+        b.addEventListener('click', function () { if (id !== current) select(id); });
+        toggleEl.appendChild(b);
+      })(curOpts[i]);
+    }
+  }
+
+  function renderBody(slot) {
     bodyEl.innerHTML = '';
     if (slot.given) {
       var g = document.createElement('p');
@@ -449,46 +481,46 @@ APP_JS = """// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달
     }
   }
 
-  function openSheet(id) {
+  function select(id) {
+    var slot = data[id];
+    if (!slot) return;
     current = id;
     highlight(id);
-    render(id);
-    sheet.hidden = false;
-    sheet.classList.remove('closing');
-    // 선택 칸이 시트에 가리지 않도록 위쪽으로 부드럽게 스크롤.
+    titleEl.textContent = slot.dir + ' ' + slot.num + ' · ' + slot.len + ' letters';
+    renderToggle();
+    renderBody(slot);
+    panel.hidden = false;
+    requestAnimationFrame(function () { panel.classList.add('in'); });
+    // 선택 칸이 패널 위쪽 격자 영역 안에 보이도록 스크롤(패널과 겹치지 않음).
     var first = grid.querySelector('.cell.sel');
     if (first && first.scrollIntoView) first.scrollIntoView({block: 'center', behavior: 'smooth'});
   }
 
-  function closeSheet() {
-    if (sheet.hidden) return;
-    sheet.classList.add('closing');
+  function closePanel() {
+    if (panel.hidden) return;
+    panel.classList.remove('in');
     clearSel();
     current = null;
-    var done = function () {
-      sheet.hidden = true;
-      sheet.classList.remove('closing');
-      sheet.removeEventListener('transitionend', done);
-    };
-    sheet.addEventListener('transitionend', done);
-    setTimeout(done, 300);  // transition 미발생 환경 대비 폴백
+    curOpts = [];
+    panel.hidden = true;
   }
 
-  // 비모달이라 문서 전역에서 탭을 받는다:
+  // 문서 전역 탭 처리:
   //  - 클루 칸 탭 -> 선택/전환(교차칸 재탭은 방향 토글)
-  //  - 시트 내부 탭 -> 무시
-  //  - 그 외(검은칸/여백) 탭 -> 시트 닫기
+  //  - 패널 내부 탭 -> 패널이 처리(닫기/토글 버튼)
+  //  - 그 외(검은칸/여백) 탭 -> 패널 닫기
   document.addEventListener('click', function (e) {
     var t = e.target;
-    if (sheet.contains(t)) return;
+    if (panel.contains(t)) return;
     var cell = t.closest ? t.closest('.cell.clue') : null;
-    if (!cell) { closeSheet(); return; }
+    if (!cell) { closePanel(); return; }
     var a = cell.getAttribute('data-a');
     var d = cell.getAttribute('data-d');
     var opts = [];
     if (a) opts.push(a);
     if (d) opts.push(d);
-    if (!opts.length) { closeSheet(); return; }
+    if (!opts.length) { closePanel(); return; }
+    curOpts = opts;
     var pick;
     if (opts.length === 1) {
       pick = opts[0];
@@ -497,25 +529,13 @@ APP_JS = """// 격자 칸 탭 -> 단어 선택/토글 -> 하단 시트(비모달
     } else {
       pick = opts[0];
     }
-    openSheet(pick);
+    select(pick);
   });
 
-  closeBtn.addEventListener('click', closeSheet);
+  closeBtn.addEventListener('click', closePanel);
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !sheet.hidden) closeSheet();
+    if (e.key === 'Escape' && !panel.hidden) closePanel();
   });
-
-  // 핸들 스와이프다운으로 닫기 (모바일).
-  var startY = null;
-  sheet.addEventListener('touchstart', function (e) {
-    if (e.touches && e.touches.length === 1) startY = e.touches[0].clientY;
-  }, { passive: true });
-  sheet.addEventListener('touchmove', function (e) {
-    if (startY === null) return;
-    var dy = e.touches[0].clientY - startY;
-    if (dy > 60 && sheet.scrollTop <= 0) { closeSheet(); startY = null; }
-  }, { passive: true });
-  sheet.addEventListener('touchend', function () { startY = null; });
 })();
 """
 
